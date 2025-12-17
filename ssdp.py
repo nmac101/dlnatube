@@ -1,3 +1,4 @@
+import os
 import base64
 import socket
 import uuid
@@ -5,64 +6,6 @@ import time
 import threading
 import platform
 from http.server import BaseHTTPRequestHandler, HTTPServer
-
-
-DESCRIPTION_XML_TEMPLATE = f"""<?xml version="1.0"?>
-<root xmlns="urn:schemas-upnp-org:device-1-0" xmlns:dlna="urn:schemas-dlna-org:device-1-0" xmlns:sec="http://www.sec.co.kr/dlna">
-  <specVersion>
-    <major>1</major>
-    <minor>0</minor>
-  </specVersion>
-  <device>
-    <dlna:X_DLNACAP/>
-    <dlna:X_DLNADOC>DMS-1.50</dlna:X_DLNADOC>
-    <UDN>uuid:{uuid.uuid4()}</UDN>
-    <dlna:X_DLNADOC>M-DMS-1.50</dlna:X_DLNADOC>
-    <friendlyName>DLNATube</friendlyName>
-    <deviceType>urn:schemas-upnp-org:device:MediaServer:1</deviceType>
-    <manufacturer>nmac101</manufacturer>
-    <manufacturerURL>https://github.com/nmac101/dlnatube</manufacturerURL>
-    <modelName>DLNATube</modelName>
-    <modelDescription></modelDescription>
-    <modelNumber>Running on {platform.node()}</modelNumber>
-    <modelURL></modelURL>
-    <serialNumber></serialNumber>
-    <sec:ProductCap>smi,DCM10,getMediaInfo.sec,getCaptionInfo.sec</sec:ProductCap>
-    <sec:X_ProductCap>smi,DCM10,getMediaInfo.sec,getCaptionInfo.sec</sec:X_ProductCap>
-    <iconList>
-      <icon>
-        <mimetype>image/png</mimetype>
-        <width>128</width>
-        <height>128</height>
-        <depth>24</depth>
-        <url>/icon.png</url>
-      </icon>
-    </iconList>
-    <serviceList>
-      <service>
-        <serviceType>urn:schemas-upnp-org:service:ContentDirectory:1</serviceType>
-        <serviceId>urn:upnp-org:serviceId:ContentDirectory</serviceId>
-        <SCPDURL>/contentDirectory.xml</SCPDURL>
-        <controlURL>/serviceControl</controlURL>
-        <eventSubURL></eventSubURL>
-      </service>
-      <service>
-        <serviceType>urn:schemas-upnp-org:service:ConnectionManager:1</serviceType>
-        <serviceId>urn:upnp-org:serviceId:ConnectionManager</serviceId>
-        <SCPDURL>/connectionManager.xml</SCPDURL>
-        <controlURL>/serviceControl</controlURL>
-        <eventSubURL></eventSubURL>
-      </service>
-      <service>
-        <serviceType>urn:schemas-upnp-org:service:X_MS_MediaReceiverRegistrar:1</serviceType>
-        <serviceId>urn:microsoft.com:serviceId:X_MS_MediaReceiverRegistrar</serviceId>
-        <SCPDURL>/MSMediaReceiverRegistrar.xml</SCPDURL>
-        <controlURL>/serviceControl</controlURL>
-        <eventSubURL></eventSubURL>
-      </service>
-    </serviceList>
-  </device>
-</root>"""
 
 server_icon = """
 iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAAAAXNSR0IB2cksfwAAAARnQU1BAACx
@@ -109,11 +52,11 @@ oZdUIiOdLXpxjlJKKaWUUkoppZRSSimllFJKKaWUUkqpi/UfUfA+n2sUKugAAAAASUVORK5CYII=
 
 class DLNAHttpRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path == "/description.xml":
+        if self.path == "/web/description.xml":
             self.send_response(200)
             self.send_header("Content-type", "application/xml")
             self.end_headers()
-            xml = DESCRIPTION_XML_TEMPLATE
+            xml = self.server.dlna_server._generate_description_xml()
             self.wfile.write(xml.encode("utf-8"))
         elif self.path == "/icon.png":
             self.send_response(200)
@@ -138,11 +81,27 @@ class DLNAServer:
     ):
         self.port = port
         self.host_ip = host_ip if host_ip else self._get_local_ip()
+        self.uuid = uuid.uuid4()
 
         self.httpd = None
         self.http_thread = None
         self.broadcast_thread = None
         self._stop_event = threading.Event()
+
+    def _generate_description_xml(self):
+        try:
+            with open("web/description.xml", "r") as f:
+                xml_template = f.read()
+        except FileNotFoundError:
+            print(
+                "Error: web/description.xml not found. Please ensure the file exists."
+            )
+            return ""
+
+        xml = xml_template.replace("{{UUID}}", str(self.uuid)).replace(
+            "{{NODE_NAME}}", platform.node()
+        )
+        return xml
 
     def _get_local_ip(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -159,6 +118,7 @@ class DLNAServer:
     def _run_http_server(self):
         server_address = (self.host_ip, self.port)
         self.httpd = HTTPServer(server_address, DLNAHttpRequestHandler)
+        self.httpd.dlna_server = self  # Pass DLNAServer instance to the httpd
 
         print(f"Starting httpd on {self.host_ip}:{self.port}...")
         self.httpd.serve_forever()
@@ -166,13 +126,13 @@ class DLNAServer:
     def _broadcast_presence(self):
         MCAST_GRP = "239.255.255.250"
         MCAST_PORT = 1900
-        desc_path = "/description.xml"
+        desc_path = "/web/description.xml"
         location = f"http://{self.host_ip}:{self.port}{desc_path}"
         server_sig = "Linux/3.14 UPnP/1.0 MyPythonDLNA/1.0"
 
         targets = [
             "upnp:rootdevice",
-            "uuid:12345678-1234-1234-1234-123456789012",
+            f"uuid:{self.uuid}",
             "urn:schemas-upnp-org:device:MediaServer:1",
         ]
 
@@ -180,10 +140,10 @@ class DLNAServer:
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
 
         for target in targets:
-            if target == "uuid:12345678-1234-1234-1234-123456789012":
+            if target == f"uuid:{self.uuid}":
                 usn = target
             else:
-                usn = f"uuid:12345678-1234-1234-1234-123456789012::{target}"
+                usn = f"uuid:{self.uuid}::{target}"
 
             packet = (
                 "NOTIFY * HTTP/1.1\r\n"
