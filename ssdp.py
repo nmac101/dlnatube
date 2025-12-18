@@ -5,6 +5,7 @@ import uuid
 import time
 import threading
 import platform
+import mimetypes
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 server_icon = """
@@ -52,7 +53,13 @@ oZdUIiOdLXpxjlJKKaWUUkoppZRSSimllFJKKaWUUkqpi/UfUfA+n2sUKugAAAAASUVORK5CYII=
 
 class DLNAHttpRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path == "/web/description.xml":
+        if os.path.exists(os.path.join("./web/", self.path)):
+            self.send_response(200)
+            self.send_header("Content-type", mimetypes.guess_type(self.path))
+            self.end_headers()
+            self.wfile.write(os.path.join("./web/", self.path))
+        """
+        elif self.path == "/web/description.xml":
             self.send_response(200)
             self.send_header("Content-type", "application/xml")
             self.end_headers()
@@ -67,6 +74,7 @@ class DLNAHttpRequestHandler(BaseHTTPRequestHandler):
         else:
             self.send_response(404)
             self.end_headers()
+        """
 
     def log_message(self, format, *args):
         # Quiet the HTTP server logging
@@ -104,16 +112,43 @@ class DLNAServer:
         return xml
 
     def _get_local_ip(self):
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
-            # Doesn't need to be reachable
-            s.connect(("10.255.255.255", 1))
-            IP = s.getsockname()[0]
+            # Attempt to get all IP addresses associated with the hostname
+            hostname = socket.gethostname()
+            _, _, ip_addresses = socket.gethostbyname_ex(hostname)
+
+            # Filter out loopback and link-local addresses
+            non_loopback_ips = [
+                ip
+                for ip in ip_addresses
+                if not ip.startswith("127.") and not ip.startswith("169.254.")
+            ]
+
+            if non_loopback_ips:
+                # Return the first valid non-loopback IP found
+                return non_loopback_ips[0]
+
+            # Fallback to the original method if gethostbyname_ex yields no suitable IPs
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.connect(("127.0.0.1", 80))
+                IP = s.getsockname()[0]
+                return IP
+            except Exception:
+                return "127.0.0.1"
+            finally:
+                s.close()
         except Exception:
-            IP = "127.0.0.1"
-        finally:
-            s.close()
-        return IP
+            # General fallback if any of the above fails
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.connect(("8.8.8.8", 80))
+                IP = s.getsockname()[0]
+                return IP
+            except Exception:
+                return "127.0.0.1"
+            finally:
+                s.close()
 
     def _run_http_server(self):
         server_address = (self.host_ip, self.port)

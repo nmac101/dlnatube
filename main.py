@@ -2,6 +2,7 @@ from ssdp import DLNAServer
 import time
 import threading
 
+
 if __name__ == "__main__":
     server = DLNAServer()
     server.start()
