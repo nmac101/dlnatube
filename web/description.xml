@@ -34,21 +34,21 @@
         <serviceType>urn:schemas-upnp-org:service:ContentDirectory:1</serviceType>
         <serviceId>urn:upnp-org:serviceId:ContentDirectory</serviceId>
         <SCPDURL>/contentDirectory.xml</SCPDURL>
-        <controlURL>/serviceControl</controlURL>
+        <controlURL>/ContentDirectory/control</controlURL>
         <eventSubURL></eventSubURL>
       </service>
       <service>
         <serviceType>urn:schemas-upnp-org:service:ConnectionManager:1</serviceType>
         <serviceId>urn:upnp-org:serviceId:ConnectionManager</serviceId>
         <SCPDURL>/connectionManager.xml</SCPDURL>
-        <controlURL>/serviceControl</controlURL>
+        <controlURL>/ConnectionManager/control</controlURL>
         <eventSubURL></eventSubURL>
       </service>
       <service>
         <serviceType>urn:schemas-upnp-org:service:X_MS_MediaReceiverRegistrar:1</serviceType>
         <serviceId>urn:microsoft.com:serviceId:X_MS_MediaReceiverRegistrar</serviceId>
         <SCPDURL>/MSMediaReceiverRegistrar.xml</SCPDURL>
-        <controlURL>/serviceControl</controlURL>
+        <controlURL>/MediaReceiverRegistrar/control</controlURL>
         <eventSubURL></eventSubURL>
       </service>
     </serviceList>

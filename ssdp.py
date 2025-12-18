@@ -2,13 +2,11 @@ import os
 import time
 import socket
 import uuid
-import time
 import threading
 import platform
 import mimetypes
 import xml.etree.ElementTree as ET
 import didl
-from urllib.parse import parse_qs, urlparse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 
@@ -194,89 +192,80 @@ class ContentDirectory:
             },
         }
 
-    def _generate_didl_lite(
+    def _data_to_didl_object(self, data):
+        """Convert a dictionary from self.content to a DIDL object."""
+        obj_type = data.get("type")
+        if obj_type == "container":
+            cls = (
+                didl.type_by_upnp_class(data.get("class", "object.container"))
+                or didl.Container
+            )
+            return cls(
+                id=data["id"],
+                parent_id=data.get("parent", "-1"),
+                title=data["title"],
+                restricted="1",
+                child_count=str(data.get("child_count", 0)),
+                never_playable="1",
+            )
+
+        if obj_type == "item":
+            cls = didl.type_by_upnp_class(data["class"]) or didl.Item
+
+            res = didl.Resource(
+                uri=f"http://{self.server.host_ip}:{self.server.port}/media/{data['id']}",
+                protocol_info=f"http-get:*:{data['mime_type']}:*",
+                size=data.get("size"),
+                duration=data.get("duration"),
+            )
+
+            return cls(
+                id=data["id"],
+                parent_id=data.get("parent", "-1"),
+                title=data["title"],
+                restricted="1",
+                resources=[res],
+            )
+
+        return None
+
+    def _generate_didl_objects(
         self,
         object_id,
         browse_flag="BrowseDirectChildren",
         starting_index=0,
         requested_count=0,
     ):
-        didl_obj = didl.DIDLLite()
+        didl_objects = []
+        total_matches = 0
 
         if browse_flag == "BrowseMetadata":
             item_data = self.content.get(object_id)
             if item_data:
-                if item_data["type"] == "container":
-                    container = didl.Container(
-                        id=item_data["id"],
-                        parent_id=item_data.get("parent", "-1"),
-                        title=item_data["title"],
-                        restricted=True,
-                        child_count=item_data.get("child_count", 0),
-                    )
-                    didl_obj.add_container(container)
-                else:  # item
-                    item = didl.Item(
-                        id=item_data["id"],
-                        parent_id=item_data.get("parent", "-1"),
-                        title=item_data["title"],
-                        upnp_class=item_data["class"],
-                        restricted=True,
-                    )
-                    res = didl.Resource(
-                        f"http://{self.server.host_ip}:{self.server.port}/media/{item_data['id']}",
-                        f"http-get:*:{item_data['mime_type']}:*",
-                    )
-                    if "size" in item_data:
-                        res.size = item_data["size"]
-                    if "duration" in item_data:
-                        res.duration = item_data["duration"]
-                    item.res.append(res)
-                    didl_obj.add_item(item)
+                didl_obj = self._data_to_didl_object(item_data)
+                if didl_obj:
+                    didl_objects.append(didl_obj)
+                total_matches = 1 if didl_obj else 0
 
         elif browse_flag == "BrowseDirectChildren":
             parent_container_data = self.content.get(object_id)
             if parent_container_data and "children" in parent_container_data:
                 children_ids = parent_container_data["children"]
+                total_matches = len(children_ids)
 
                 start = int(starting_index)
-                count = (
-                    int(requested_count) if requested_count > 0 else len(children_ids)
-                )
-                end = min(start + count, len(children_ids))
+                req_count = int(requested_count)
+                count = req_count if req_count > 0 else total_matches
+                end = min(start + count, total_matches)
 
                 for child_id in children_ids[start:end]:
                     child_data = self.content.get(child_id)
                     if child_data:
-                        if child_data["type"] == "container":
-                            container = didl.Container(
-                                id=child_data["id"],
-                                parent_id=child_data.get("parent", "-1"),
-                                title=child_data["title"],
-                                restricted=True,
-                                child_count=child_data.get("child_count", 0),
-                            )
-                            didl_obj.add_container(container)
-                        else:  # item
-                            item = didl.Item(
-                                id=child_data["id"],
-                                parent_id=child_data.get("parent", "-1"),
-                                title=child_data["title"],
-                                upnp_class=child_data["class"],
-                                restricted=True,
-                            )
-                            res = didl.Resource(
-                                f"http://{self.server.host_ip}:{self.server.port}/media/{child_data['id']}",
-                                f"http-get:*:{child_data['mime_type']}:*",
-                            )
-                            if "size" in child_data:
-                                res.size = child_data["size"]
-                            if "duration" in child_data:
-                                res.duration = child_data["duration"]
-                            item.res.append(res)
-                            didl_obj.add_item(item)
+                        didl_obj = self._data_to_didl_object(child_data)
+                        if didl_obj:
+                            didl_objects.append(didl_obj)
 
-        return didl_obj.to_xml_string()
+        return didl_objects, total_matches
 
     def browse(
         self,
@@ -287,24 +276,12 @@ class ContentDirectory:
         requested_count,
         sort_criteria,
     ):
-        didl_xml = self._generate_didl_lite(
+        didl_objects, total_matches = self._generate_didl_objects(
             object_id, browse_flag, starting_index, requested_count
         )
 
-        item = self.content.get(object_id)
-        total_matches = 0
-        number_returned = 0
-
-        if browse_flag == "BrowseMetadata":
-            total_matches = 1
-            number_returned = 1
-        elif browse_flag == "BrowseDirectChildren" and item and "children" in item:
-            total_matches = len(item["children"])
-            start = int(starting_index)
-            count = (
-                int(requested_count) if requested_count > 0 else len(item["children"])
-            )
-            number_returned = min(count, total_matches - start)
+        didl_xml = didl.to_xml_string(*didl_objects).decode("utf-8")
+        number_returned = len(didl_objects)
 
         return didl_xml, number_returned, total_matches, self.system_update_id
 
@@ -474,12 +451,15 @@ class DLNAHttpRequestHandler(BaseHTTPRequestHandler):
                         "TotalMatches": str(total_matches),
                         "UpdateID": str(update_id),
                     },
+                    "urn:schemas-upnp-org:service-ContentDirectory:1",
                 )
 
             elif action_name == "GetSystemUpdateID":
                 update_id = self.dlna_server.content_directory.get_system_update_id()
                 response = self._generate_soap_response(
-                    "GetSystemUpdateID", {"Id": update_id}
+                    "GetSystemUpdateID",
+                    {"Id": update_id},
+                    "urn:schemas-upnp-org:service-ContentDirectory:1",
                 )
 
             elif action_name == "GetSearchCapabilities":
@@ -487,13 +467,17 @@ class DLNAHttpRequestHandler(BaseHTTPRequestHandler):
                     self.dlna_server.content_directory.get_search_capabilities()
                 )
                 response = self._generate_soap_response(
-                    "GetSearchCapabilities", {"SearchCaps": search_caps}
+                    "GetSearchCapabilities",
+                    {"SearchCaps": search_caps},
+                    "urn:schemas-upnp-org:service-ContentDirectory:1",
                 )
 
             elif action_name == "GetSortCapabilities":
                 sort_caps = self.dlna_server.content_directory.get_sort_capabilities()
                 response = self._generate_soap_response(
-                    "GetSortCapabilities", {"SortCaps": sort_caps}
+                    "GetSortCapabilities",
+                    {"SortCaps": sort_caps},
+                    "urn:schemas-upnp-org:service-ContentDirectory:1",
                 )
 
             else:
@@ -511,15 +495,15 @@ class DLNAHttpRequestHandler(BaseHTTPRequestHandler):
         except Exception as e:
             self.send_error(500, f"Internal server error: {e}")
 
-    def _generate_soap_response(self, action_name, arguments):
+    def _generate_soap_response(self, action_name, arguments, service_ns):
         response = f"""<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
   <s:Body>
-    <u:{action_name}Response xmlns:u="urn:schemas-upnp-org:service-ContentDirectory:1">"""
+    <u:{action_name}Response xmlns:u="{service_ns}">"""
 
         for arg_name, arg_value in arguments.items():
             response += (
-                f"\n      <{arg_name}>{self._escape_xml(arg_value)}</{arg_name}>"
+                f"\n      <{arg_name}>{self._escape_xml(str(arg_value))}</{arg_name}>"
             )
 
         response += f"""
@@ -538,12 +522,76 @@ class DLNAHttpRequestHandler(BaseHTTPRequestHandler):
             .replace("'", "&apos;")
         )
 
-    def do_POST(self):
-        if "serviceControl" in self.path:
-            self._handle_soap_request()
+    def _handle_cm_soap_request(self):
+        content_length = int(self.headers.get("Content-Length", 0))
+        if content_length == 0:
+            self.send_error(400, "Empty SOAP request")
             return
 
-        print(f"Received POST request for URL: {self.path}")
+        soap_body = self.rfile.read(content_length).decode("utf-8", errors="ignore")
+
+        try:
+            root = ET.fromstring(soap_body)
+            action_node = root.find(
+                ".//{http://schemas.xmlsoap.org/soap/envelope/}Body/*"
+            )
+
+            if action_node is None:
+                self.send_error(400, "Invalid SOAP request")
+                return
+
+            action_name = (
+                action_node.tag.split("}")[-1]
+                if "}" in action_node.tag
+                else action_node.tag
+            )
+
+            if action_name == "GetProtocolInfo":
+                source_protocols = "http-get:*:video/mp4:*,http-get:*:audio/mpeg:*,http-get:*:image/jpeg:*"
+                response = self._generate_soap_response(
+                    "GetProtocolInfo",
+                    {"Source": source_protocols, "Sink": ""},
+                    "urn:schemas-upnp-org:service:ConnectionManager:1",
+                )
+            elif action_name == "GetCurrentConnectionIDs":
+                response = self._generate_soap_response(
+                    "GetCurrentConnectionIDs",
+                    {"ConnectionIDs": "0"},
+                    "urn:schemas-upnp-org:service:ConnectionManager:1",
+                )
+            elif action_name == "PrepareForConnection":
+                response = self._generate_soap_response(
+                    "PrepareForConnection",
+                    {"ConnectionID": -1, "AVTransportID": -1, "RcsID": -1},
+                    "urn:schemas-upnp-org:service:ConnectionManager:1",
+                )
+            else:
+                self.send_error(501, f"Action {action_name} not implemented")
+                return
+
+            self.send_response(200)
+            self.send_header("Content-type", "text/xml; charset=utf-8")
+            self.send_header("EXT", "")
+            self.end_headers()
+            self.wfile.write(response.encode("utf-8"))
+
+        except ET.ParseError as e:
+            self.send_error(400, f"Invalid XML: {e}")
+        except Exception as e:
+            self.send_error(500, f"Internal server error: {e}")
+
+    def do_POST(self):
+        if self.path == "/ContentDirectory/control":
+            self._handle_soap_request()
+            return
+        elif self.path == "/ConnectionManager/control":
+            self._handle_cm_soap_request()
+            return
+        elif self.path == "/MediaReceiverRegistrar/control":
+            self.send_error(501, "Not Implemented")
+            return
+
+        print(f"Received unhandled POST request for URL: {self.path}")
         print("Headers:")
         for header, value in self.headers.items():
             print(f"  {header}: {value}")
@@ -555,10 +603,7 @@ class DLNAHttpRequestHandler(BaseHTTPRequestHandler):
         else:
             print("No content in POST request.")
 
-        self.send_response(200)
-        self.send_header("Content-type", "text/plain")
-        self.end_headers()
-        self.wfile.write(b"POST request received and processed.")
+        self.send_error(404, "Not Found")
 
 
 class DLNAServer:
